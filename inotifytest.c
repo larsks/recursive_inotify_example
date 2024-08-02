@@ -14,7 +14,7 @@
 typedef struct _watched_dir {
   int wd;
   int depth;
-  char path[PATH_MAX];
+  char *path;
 
   LIST_ENTRY(_watched_dir) links;
 } watched_dir;
@@ -54,8 +54,13 @@ watched_dir *new_watched_dir(int wd, int depth, const char *path) {
   watched_dir *d = (watched_dir *)malloc(sizeof(watched_dir));
   d->wd = wd;
   d->depth = depth;
-  strncpy(d->path, path, PATH_MAX);
+  d->path = strdup(path);
   return d;
+}
+
+void del_watched_dir(watched_dir *d) {
+  free(d->path);
+  free(d);
 }
 
 // Function to add inotify watch recursively up to a specified depth
@@ -200,7 +205,7 @@ int main(int argc, char *argv[]) {
           printf("Watched directory deleted: %s\n", remove->path);
           inotify_rm_watch(inotify_fd, event->wd);
           LIST_REMOVE(remove, links);
-          free(remove);
+          del_watched_dir(remove);
           dump_watch_list();
         } else {
           fprintf(stderr, "received delete event for unknown watch\n");
