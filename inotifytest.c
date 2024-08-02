@@ -200,6 +200,7 @@ int main(int argc, char *argv[]) {
           printf("Watched directory deleted: %s\n", remove->path);
           inotify_rm_watch(inotify_fd, event->wd);
           LIST_REMOVE(remove, links);
+          free(remove);
           dump_watch_list();
         } else {
           fprintf(stderr, "received delete event for unknown watch\n");
