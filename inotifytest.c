@@ -153,7 +153,7 @@ int main(int argc, char *argv[]) {
   char buffer[EVENT_BUF_LEN];
 
   // Event loop
-  while (1) {
+  while (!LIST_EMPTY(&watched_dirs)) {
     int length = read(inotify_fd, buffer, EVENT_BUF_LEN);
 
     if (length < 0) {
