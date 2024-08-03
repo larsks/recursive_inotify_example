@@ -1,4 +1,4 @@
-OBJS = inotifytest.o
+OBJS = inotifytest.o watchdir.o must.o
 CFLAGS=-g
 
 all: inotifytest

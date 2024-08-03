@@ -8,89 +8,48 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "must.h"
+#include "watchdir.h"
+
 #define EVENT_SIZE (sizeof(struct inotify_event))
 #define EVENT_BUF_LEN (1024 * (EVENT_SIZE + NAME_MAX + 1))
 
-typedef struct _watched_dir {
-  int wd;
-  int depth;
-  char *path;
+void remove_watch(int inotify_fd, int wd) {
+  watched_dir *d = find_dir_from_wd(wd);
 
-  LIST_ENTRY(_watched_dir) links;
-} watched_dir;
-
-LIST_HEAD(watched_dir_list, _watched_dir) watched_dirs;
-
-void dump_watch_list() {
-  printf("WATCH LIST\n");
-  watched_dir *d;
-  LIST_FOREACH(d, &watched_dirs, links) {
-    printf("wd %d depth %d name %s\n", d->wd, d->depth, d->path);
+  if (d != NULL) {
+    inotify_rm_watch(inotify_fd, wd);
+    LIST_REMOVE(d, links);
+    del_watched_dir(d);
   }
-}
-
-watched_dir *find_dir_from_path(char *path) {
-  watched_dir *d;
-  LIST_FOREACH(d, &watched_dirs, links) {
-    if (strcmp(d->path, path) == 0) {
-      return d;
-    }
-  }
-
-  return NULL;
-}
-
-watched_dir *find_dir_from_wd(int wd) {
-  watched_dir *d;
-  LIST_FOREACH(d, &watched_dirs, links) {
-    if (d->wd == wd)
-      return d;
-  }
-
-  return NULL;
-}
-
-watched_dir *new_watched_dir(int wd, int depth, const char *path) {
-  watched_dir *d = (watched_dir *)malloc(sizeof(watched_dir));
-  d->wd = wd;
-  d->depth = depth;
-  d->path = strdup(path);
-  return d;
-}
-
-void del_watched_dir(watched_dir *d) {
-  free(d->path);
-  free(d);
 }
 
 // Function to add inotify watch recursively up to a specified depth
 void add_watch_recursive(int inotify_fd, const char *base_path, int depth,
                          int current_depth) {
-  printf("add_watch_recursive %d %s\n", current_depth, base_path);
+  int watch_fd;
+  watched_dir *wd;
+  DIR *dir;
+  struct dirent *entry;
+
   if (current_depth > depth) {
     return;
   }
 
-  printf("base_path %s \t", base_path);
-  int watch_fd = inotify_add_watch(inotify_fd, base_path,
-                                   IN_CREATE | IN_DELETE | IN_DELETE_SELF);
-  printf("watch_fd %d \n", watch_fd);
-  if (watch_fd < 0) {
-    perror("inotify_add_watch");
-    return;
-  }
+  MUST(watch_fd = inotify_add_watch(inotify_fd, base_path,
+                                    IN_CREATE | IN_DELETE | IN_DELETE_SELF),
+       "failed to add inotify watch");
 
-  watched_dir *wd = new_watched_dir(watch_fd, current_depth, base_path);
+  wd = new_watched_dir(watch_fd, current_depth, base_path);
 
   LIST_INSERT_HEAD(&watched_dirs, wd, links);
 
-  DIR *dir = opendir(base_path);
+  dir = opendir(base_path);
   if (!dir) {
     perror("opendir");
     return;
   }
 
-  struct dirent *entry;
   while ((entry = readdir(dir)) != NULL) {
     if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
       continue;
@@ -109,6 +68,9 @@ void add_watch_recursive(int inotify_fd, const char *base_path, int depth,
 }
 
 int main(int argc, char *argv[]) {
+  int inotify_fd;
+  int depth;
+
   if (argc < 3) {
     fprintf(stderr, "Usage: %s <path> <depth>\n", argv[0]);
     return EXIT_FAILURE;
@@ -117,7 +79,7 @@ int main(int argc, char *argv[]) {
   LIST_INIT(&watched_dirs);
 
   const char *path = argv[1];
-  int depth = atoi(argv[2]);
+  depth = atoi(argv[2]);
 
   if (depth < 0) {
     fprintf(stderr, "Error: Depth must be a non-negative integer\n");
@@ -129,10 +91,7 @@ int main(int argc, char *argv[]) {
 
   // Check if the directory exists
   struct stat statbuf;
-  if (stat(path, &statbuf) != 0) {
-    perror("stat");
-    return EXIT_FAILURE;
-  }
+  MUST(stat(path, &statbuf), "failed to check if directory exists");
 
   // Check if it is a directory
   if (!S_ISDIR(statbuf.st_mode)) {
@@ -141,11 +100,7 @@ int main(int argc, char *argv[]) {
   }
 
   // Initialize inotify
-  int inotify_fd = inotify_init();
-  if (inotify_fd < 0) {
-    perror("inotify_init");
-    return EXIT_FAILURE;
-  }
+  MUST(inotify_fd = inotify_init(), "failed to allocate inotify fd");
 
   // Add watch on the specified directory and its subdirectories up to the
   // specified depth
@@ -159,17 +114,17 @@ int main(int argc, char *argv[]) {
 
   // Event loop
   while (!LIST_EMPTY(&watched_dirs)) {
-    int length = read(inotify_fd, buffer, EVENT_BUF_LEN);
+    int length;
 
-    if (length < 0) {
-      perror("read");
-      exit(EXIT_FAILURE);
-    }
+    MUST(length = read(inotify_fd, buffer, EVENT_BUF_LEN),
+         "failed to read inotify events");
 
     int i = 0;
     while (i < length) {
       struct inotify_event *event = (struct inotify_event *)&buffer[i];
       i += EVENT_SIZE + event->len;
+
+      // we get this after a watched directory has been deleted
       if (event->mask & IN_IGNORED)
         continue;
 
@@ -200,15 +155,8 @@ int main(int argc, char *argv[]) {
           }
         }
       } else if (event->mask & IN_DELETE_SELF) {
-        watched_dir *remove = find_dir_from_wd(event->wd);
-        if (remove != NULL) {
-          printf("Watched directory deleted: %s\n", remove->path);
-          inotify_rm_watch(inotify_fd, event->wd);
-          LIST_REMOVE(remove, links);
-          del_watched_dir(remove);
-          dump_watch_list();
-        } else {
-          fprintf(stderr, "received delete event for unknown watch\n");
+        if (remove_watch(inotify_fd, event->wd)) {
+          printf("");
         }
       }
     }
