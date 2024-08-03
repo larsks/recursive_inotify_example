@@ -1,5 +1,6 @@
 #include <dirent.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,17 +15,31 @@
 #define EVENT_SIZE (sizeof(struct inotify_event))
 #define EVENT_BUF_LEN (1024 * (EVENT_SIZE + NAME_MAX + 1))
 
-void remove_watch(int inotify_fd, int wd) {
+/**
+ * Remove watch descriptor wd from the list of watched directories.
+ *
+ * Returns 1 if the watch descriptor was found in the list of watched
+ * directories, 0 otherwise. If the watch descriptor is found and
+ * path is non-NULL, copy the watched path into the path variable.
+ */
+int remove_watch(int inotify_fd, int wd, char *path, size_t pathlen) {
   watched_dir *d = find_dir_from_wd(wd);
 
   if (d != NULL) {
+    if (path != NULL) {
+      strncpy(path, d->path, pathlen);
+    }
     inotify_rm_watch(inotify_fd, wd);
     LIST_REMOVE(d, links);
     del_watched_dir(d);
+    return 1;
   }
+  return 0;
 }
 
-// Function to add inotify watch recursively up to a specified depth
+/**
+ * Add inotify watch recursively up to a specified depth.
+ */
 void add_watch_recursive(int inotify_fd, const char *base_path, int depth,
                          int current_depth) {
   int watch_fd;
@@ -155,8 +170,9 @@ int main(int argc, char *argv[]) {
           }
         }
       } else if (event->mask & IN_DELETE_SELF) {
-        if (remove_watch(inotify_fd, event->wd)) {
-          printf("");
+        char path[PATH_MAX];
+        if (remove_watch(inotify_fd, event->wd, path, PATH_MAX)) {
+          printf("Remove watch on directory: %s\n", path);
         }
       }
     }
